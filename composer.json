@@ -1,0 +1,18 @@
+{
+    "name": "junu/dunning",
+    "description": "Dunning system for Shopware 6.6",
+    "type": "project",
+    "require": {
+        "php": "^8.4",
+        "vlucas/phpdotenv": "^5.6",
+        "guzzlehttp/guzzle": "^7.9",
+        "monolog/monolog": "^3.7",
+        "getbrevo/brevo-php": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "JunuDunning\\": "src/"
+        }
+    },
+    "license": "MIT"
+}

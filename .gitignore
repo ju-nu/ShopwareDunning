@@ -1,0 +1,5 @@
+/vendor/
+/logs/
+.env
+.env.example
+composer.lock
