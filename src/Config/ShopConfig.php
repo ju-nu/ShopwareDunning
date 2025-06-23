@@ -7,14 +7,15 @@ namespace JunuDunning\Config;
 use JunuDunning\Exception\ConfigurationException;
 
 /**
- * Represents a single shop's configuration.
+ * Represents a single sales channel's configuration.
  */
 final class ShopConfig
 {
     public readonly string $url;
     public readonly string $apiKey;
     public readonly string $apiSecret;
-    public readonly string $domain;
+    public readonly string $salesChannelId;
+    public readonly string $salesChannelDomain;
     public readonly string $brevoApiKey;
     public readonly string $noInvoiceEmail;
     public readonly string $zeTemplate;
@@ -26,7 +27,8 @@ final class ShopConfig
         string $url,
         string $apiKey,
         string $apiSecret,
-        string $domain,
+        string $salesChannelId,
+        string $salesChannelDomain,
         string $brevoApiKey,
         string $noInvoiceEmail,
         string $zeTemplate,
@@ -34,10 +36,15 @@ final class ShopConfig
         string $mahnung2Template,
         int $dueDays
     ) {
+        if (!preg_match('/^[0-9a-f]{32}$/i', $salesChannelId)) {
+            throw new ConfigurationException("Invalid sales_channel_id: {$salesChannelId}");
+        }
+
         $this->url = rtrim($url, '/');
         $this->apiKey = $apiKey;
         $this->apiSecret = $apiSecret;
-        $this->domain = $domain;
+        $this->salesChannelId = $salesChannelId;
+        $this->salesChannelDomain = $salesChannelDomain;
         $this->brevoApiKey = $brevoApiKey;
         $this->noInvoiceEmail = $noInvoiceEmail;
         $this->zeTemplate = $zeTemplate;
@@ -47,7 +54,7 @@ final class ShopConfig
     }
 
     /**
-     * Load shop configurations from environment.
+     * Load sales channel configurations from environment.
      *
      * @return self[]
      * @throws ConfigurationException
@@ -63,7 +70,8 @@ final class ShopConfig
                     $config['url'],
                     $config['api_key'],
                     $config['api_secret'],
-                    $config['domain'],
+                    $config['sales_channel_id'],
+                    $config['sales_channel_domain'],
                     $config['brevo_api_key'],
                     $config['no_invoice_email'],
                     $config['ze_template'],
@@ -72,14 +80,15 @@ final class ShopConfig
                     $config['due_days']
                 )
             ) {
-                throw new ConfigurationException("Incomplete shop configuration at index {$index}");
+                throw new ConfigurationException("Incomplete configuration at index {$index}");
             }
 
             $shops[] = new self(
                 $config['url'],
                 $config['api_key'],
                 $config['api_secret'],
-                $config['domain'],
+                $config['sales_channel_id'],
+                $config['sales_channel_domain'],
                 $config['brevo_api_key'],
                 $config['no_invoice_email'],
                 $config['ze_template'],
@@ -90,7 +99,7 @@ final class ShopConfig
         }
 
         if (empty($shops)) {
-            throw new ConfigurationException('No shop configurations found in SHOPWARE_SYSTEMS');
+            throw new ConfigurationException('No configurations found in SHOPWARE_SYSTEMS');
         }
 
         return $shops;

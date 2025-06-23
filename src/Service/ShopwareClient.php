@@ -29,7 +29,7 @@ final class ShopwareClient
     }
 
     /**
-     * Fetch orders with "reminded" transaction state.
+     * Fetch orders with "reminded" transaction state for the sales channel.
      *
      * @return array<array<string, mixed>>
      */
@@ -53,6 +53,11 @@ final class ShopwareClient
                         'value' => 'reminded',
                     ],
                     [
+                        'type' => 'equals',
+                        'field' => 'salesChannelId',
+                        'value' => $this->config->salesChannelId,
+                    ],
+                    [
                         'type' => 'not',
                         'queries' => [
                             ['type' => 'equals', 'field' => 'tags.name', 'value' => 'Mahnlauf ignorieren'],
@@ -65,12 +70,14 @@ final class ShopwareClient
             $this->logger->debug('Fetched orders', [
                 'count' => count($data['data'] ?? []),
                 'duration' => microtime(true) - $start,
+                'sales_channel_id' => $this->config->salesChannelId,
             ]);
 
             return $data['data'] ?? [];
         } catch (\Exception $e) {
             $this->logger->error('Failed to fetch orders', [
                 'url' => $this->config->url,
+                'sales_channel_id' => $this->config->salesChannelId,
                 'error' => $e->getMessage(),
             ]);
             return [];
@@ -124,6 +131,7 @@ final class ShopwareClient
                 $this->logger->warning('Retrying request', [
                     'endpoint' => $endpoint,
                     'attempt' => $attempt,
+                    'sales_channel_id' => $this->config->salesChannelId,
                     'error' => $e->getMessage(),
                 ]);
                 usleep(500000 * $attempt); // Exponential backoff
@@ -162,10 +170,14 @@ final class ShopwareClient
             $data = json_decode($response->getBody()->getContents(), true, 512, JSON_THROW_ON_ERROR);
             $this->token = $data['access_token'];
             $this->tokenExpiresAt = microtime(true) + ($data['expires_in'] - 60); // Buffer for safety
-            $this->logger->debug('Refreshed token', ['url' => $this->config->url]);
+            $this->logger->debug('Refreshed token', [
+                'url' => $this->config->url,
+                'sales_channel_id' => $this->config->salesChannelId,
+            ]);
         } catch (\Exception $e) {
             $this->logger->error('Failed to refresh token', [
                 'url' => $this->config->url,
+                'sales_channel_id' => $this->config->salesChannelId,
                 'error' => $e->getMessage(),
             ]);
             throw new ApiException('Failed to authenticate: ' . $e->getMessage(), 0, $e);

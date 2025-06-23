@@ -20,19 +20,22 @@ final class DunningProcessor
     public function __construct(
         private readonly Client $httpClient,
         private readonly BrevoMailer $mailer,
-        private readonly Logger $logger
+        private readonly Logger $logger,
+        private readonly bool $isDryRun = false
     ) {
     }
 
     /**
-     * Process all orders for a shop.
+     * Process all orders for a sales channel.
      */
     public function processShop(ShopwareClient $client, ShopConfig $config): void
     {
         $orders = $client->fetchRemindedOrders();
         $this->logger->info('Processing orders', [
             'url' => $config->url,
+            'sales_channel_id' => $config->salesChannelId,
             'order_count' => count($orders),
+            'dry_run' => $this->isDryRun,
         ]);
 
         foreach ($orders as $order) {
@@ -62,8 +65,18 @@ final class DunningProcessor
             }
 
             if ($invoice === null) {
-                $this->mailer->sendNoInvoiceEmail($config, $orderNumber, $this->logger);
-                $this->logger->info('No invoice found, skipping', ['orderNumber' => $orderNumber]);
+                if ($this->isDryRun) {
+                    $this->logger->info('[DRY-RUN] Would send no-invoice email', [
+                        'orderNumber' => $orderNumber,
+                        'sales_channel_id' => $config->salesChannelId,
+                    ]);
+                } else {
+                    $this->mailer->sendNoInvoiceEmail($config, $orderNumber, $this->logger);
+                }
+                $this->logger->info('No invoice found, skipping', [
+                    'orderNumber' => $orderNumber,
+                    'sales_channel_id' => $config->salesChannelId,
+                ]);
                 return;
             }
 
@@ -78,7 +91,10 @@ final class DunningProcessor
             }
 
             if (!$isUnpaid) {
-                $this->logger->info('Order is paid or partially paid, skipping', ['orderNumber' => $orderNumber]);
+                $this->logger->info('Order is paid or partially paid, skipping', [
+                    'orderNumber' => $orderNumber,
+                    'sales_channel_id' => $config->salesChannelId,
+                ]);
                 return;
             }
 
@@ -89,68 +105,105 @@ final class DunningProcessor
             $dueSeconds = $config->dueDays * 24 * 60 * 60;
 
             if (!in_array(self::TAG_ZE, $tags, true)) {
-                $this->sendDunningEmail($client, $config, $order, $invoice, 'ze');
-                $client->updateOrder($orderId, [
-                    'tags' => [['name' => self::TAG_ZE]],
-                    'customFields' => array_merge($customFields, ['junu_dunning_ze_sent_at' => $now]),
-                ]);
-                $this->logger->info('Sent ZE email', ['orderNumber' => $orderNumber]);
+                $this->handleDunningStage($client, $config, $order, $invoice, 'ze', self::TAG_ZE, 'junu_dunning_ze_sent_at', $now);
             } elseif (
                 in_array(self::TAG_ZE, $tags, true)
                 && !in_array(self::TAG_MAHNUNG1, $tags, true)
                 && ($customFields['junu_dunning_ze_sent_at'] ?? 0) + $dueSeconds <= $now
             ) {
-                $this->sendDunningEmail($client, $config, $order, $invoice, 'mahnung1');
-                $client->updateOrder($orderId, [
-                    'tags' => [['name' => self::TAG_MAHNUNG1]],
-                    'customFields' => array_merge($customFields, ['junu_dunning_mahnung1_sent_at' => $now]),
-                ]);
-                $this->logger->info('Sent Mahnung 1 email', ['orderNumber' => $orderNumber]);
+                $this->handleDunningStage($client, $config, $order, $invoice, 'mahnung1', self::TAG_MAHNUNG1, 'junu_dunning_mahnung1_sent_at', $now);
             } elseif (
                 in_array(self::TAG_MAHNUNG1, $tags, true)
                 && !in_array(self::TAG_MAHNUNG2, $tags, true)
                 && ($customFields['junu_dunning_mahnung1_sent_at'] ?? 0) + $dueSeconds <= $now
             ) {
-                $this->sendDunningEmail($client, $config, $order, $invoice, 'mahnung2');
-                $client->updateOrder($orderId, [
-                    'tags' => [['name' => self::TAG_MAHNUNG2]],
-                    'customFields' => array_merge($customFields, ['junu_dunning_mahnung2_sent_at' => $now]),
-                ]);
-                $this->logger->info('Sent Mahnung 2 email', ['orderNumber' => $orderNumber]);
+                $this->handleDunningStage($client, $config, $order, $invoice, 'mahnung2', self::TAG_MAHNUNG2, 'junu_dunning_mahnung2_sent_at', $now);
             } else {
-                $this->logger->debug('No action needed', ['orderNumber' => $orderNumber]);
+                $this->logger->debug('No action needed', [
+                    'orderNumber' => $orderNumber,
+                    'sales_channel_id' => $config->salesChannelId,
+                ]);
             }
         } catch (\Exception $e) {
             $this->logger->error('Failed to process order', [
                 'orderNumber' => $orderNumber,
+                'sales_channel_id' => $config->salesChannelId,
                 'error' => $e->getMessage(),
             ]);
         }
     }
 
     /**
-     * Send a dunning email with invoice attachment.
+     * Handle a dunning stage (send email and update order).
      *
      * @param array<string, mixed> $order
      * @param array<string, mixed> $invoice
      */
-    private function sendDunningEmail(
+    private function handleDunningStage(
         ShopwareClient $client,
         ShopConfig $config,
         array $order,
         array $invoice,
-        string $stage
+        string $stage,
+        string $tag,
+        string $customField,
+        int $timestamp
     ): void {
+        $orderId = $order['id'];
+        $orderNumber = $order['orderNumber'];
+
+        // Download invoice
         try {
             $pdfContent = $client->downloadInvoice($invoice['id']);
-            $this->mailer->sendDunningEmail($config, $order, $invoice, $stage, $pdfContent, $this->logger);
+            $this->saveDryRunInvoice($config, $orderNumber, $invoice['id'], $pdfContent);
         } catch (\Exception $e) {
-            $this->logger->error('Failed to send dunning email', [
-                'orderNumber' => $order['orderNumber'],
-                'stage' => $stage,
+            $this->logger->error('Failed to download invoice', [
+                'orderNumber' => $orderNumber,
+                'sales_channel_id' => $config->salesChannelId,
                 'error' => $e->getMessage(),
             ]);
+            return;
         }
+
+        if ($this->isDryRun) {
+            $this->logger->info("[DRY-RUN] Would send {$stage} email", [
+                'orderNumber' => $orderNumber,
+                'sales_channel_id' => $config->salesChannelId,
+            ]);
+            $this->logger->info("[DRY-RUN] Would update order with tag: {$tag}, customField: {$customField}={$timestamp}", [
+                'orderId' => $orderId,
+                'sales_channel_id' => $config->salesChannelId,
+            ]);
+            $this->mailer->sendDryRunDunningEmail($config, $order, $invoice, $stage, $pdfContent, $this->logger);
+        } else {
+            $this->mailer->sendDunningEmail($config, $order, $invoice, $stage, $pdfContent, $this->logger);
+            $client->updateOrder($orderId, [
+                'tags' => [['name' => $tag]],
+                'customFields' => array_merge($customFields, [$customField => $timestamp]),
+            ]);
+            $this->logger->info("Sent {$stage} email", [
+                'orderNumber' => $orderNumber,
+                'sales_channel_id' => $config->salesChannelId,
+            ]);
+        }
+    }
+
+    /**
+     * Save invoice PDF to dry-run folder.
+     */
+    private function saveDryRunInvoice(ShopConfig $config, string $orderNumber, string $documentId, string $pdfContent): void
+    {
+        $dir = __DIR__ . '/../../dry-run/' . $config->salesChannelId;
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        $file = "{$dir}/{$orderNumber}_{$documentId}.pdf";
+        file_put_contents($file, $pdfContent);
+        $this->logger->info('Saved invoice to dry-run folder', [
+            'file' => $file,
+            'orderNumber' => $orderNumber,
+            'sales_channel_id' => $config->salesChannelId,
+        ]);
     }
 }
 ?>

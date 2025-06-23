@@ -21,13 +21,16 @@ final class BrevoMailer
     public function sendNoInvoiceEmail(ShopConfig $config, string $orderNumber, Logger $logger): void
     {
         $email = new SendSmtpEmail([
-            'sender' => ['name' => 'No Reply', 'email' => 'no-reply@' . $config->domain],
+            'sender' => ['name' => 'No Reply', 'email' => 'no-reply@' . $config->salesChannelDomain],
             'to' => [['email' => $config->noInvoiceEmail]],
             'subject' => 'Order without Invoice: ' . $orderNumber,
             'htmlContent' => '<p>Please check order ' . htmlspecialchars($orderNumber) . ' for its invoice or remove it from the dunning cycle.</p>',
         ]);
 
-        $this->send($config, $email, $logger, ['orderNumber' => $orderNumber]);
+        $this->send($config, $email, $logger, [
+            'orderNumber' => $orderNumber,
+            'sales_channel_id' => $config->salesChannelId,
+        ]);
     }
 
     /**
@@ -44,17 +47,58 @@ final class BrevoMailer
         string $pdfContent,
         Logger $logger
     ): void {
+        $this->prepareAndSendEmail($config, $order, $invoice, $stage, $pdfContent, $logger, false);
+    }
+
+    /**
+     * Log a dunning email for dry-run mode.
+     *
+     * @param array<string, mixed> $order
+     * @param array<string, mixed> $invoice
+     */
+    public function sendDryRunDunningEmail(
+        ShopConfig $config,
+        array $order,
+        array $invoice,
+        string $stage,
+        string $pdfContent,
+        Logger $logger
+    ): void {
+        $this->prepareAndSendEmail($config, $order, $invoice, $stage, $pdfContent, $logger, true);
+    }
+
+    /**
+     * Prepare and send (or log) an email.
+     *
+     * @param array<string, mixed> $order
+     * @param array<string, mixed> $invoice
+     */
+    private function prepareAndSendEmail(
+        ShopConfig $config,
+        array $order,
+        array $invoice,
+        string $stage,
+        string $pdfContent,
+        Logger $logger,
+        bool $isDryRun
+    ): void {
         $orderNumber = $order['orderNumber'];
         $customerEmail = $order['orderCustomer']['email'] ?? null;
 
         if (!$customerEmail) {
-            $logger->warning('No customer email found', ['orderNumber' => $orderNumber]);
+            $logger->warning('No customer email found', [
+                'orderNumber' => $orderNumber,
+                'sales_channel_id' => $config->salesChannelId,
+            ]);
             return;
         }
 
         $templateFile = __DIR__ . '/../../templates/' . $config->{"{$stage}Template"};
         if (!file_exists($templateFile)) {
-            $logger->error('Email template not found', ['template' => $templateFile]);
+            $logger->error('Email template not found', [
+                'template' => $templateFile,
+                'sales_channel_id' => $config->salesChannelId,
+            ]);
             return;
         }
         $template = file_get_contents($templateFile);
@@ -85,7 +129,7 @@ final class BrevoMailer
         $content = str_replace(array_keys($replacements), array_values($replacements), $template);
 
         $email = new SendSmtpEmail([
-            'sender' => ['name' => 'No Reply', 'email' => 'no-reply@' . $config->domain],
+            'sender' => ['name' => 'No Reply', 'email' => 'no-reply@' . $config->salesChannelDomain],
             'to' => [['email' => $customerEmail]],
             'subject' => match ($stage) {
                 'ze' => 'Zahlungserinnerung für Bestellung ' . $orderNumber,
@@ -102,7 +146,22 @@ final class BrevoMailer
             ],
         ]);
 
-        $this->send($config, $email, $logger, ['orderNumber' => $orderNumber, 'stage' => $stage]);
+        if ($isDryRun) {
+            $logger->info('[DRY-RUN] Would send email', [
+                'orderNumber' => $orderNumber,
+                'stage' => $stage,
+                'to' => $customerEmail,
+                'subject' => $email->getSubject(),
+                'content_length' => strlen($content),
+                'sales_channel_id' => $config->salesChannelId,
+            ]);
+        } else {
+            $this->send($config, $email, $logger, [
+                'orderNumber' => $orderNumber,
+                'stage' => $stage,
+                'sales_channel_id' => $config->salesChannelId,
+            ]);
+        }
     }
 
     /**
