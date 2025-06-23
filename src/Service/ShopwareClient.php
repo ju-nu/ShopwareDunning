@@ -119,8 +119,19 @@ class ShopwareClient
 
         while ($attempts < $maxAttempts) {
             try {
-                $headers = ['Authorization' => 'Bearer ' . $this->getAccessToken()];
+                $headers = [
+                    'Authorization' => 'Bearer ' . $this->getAccessToken(),
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                ];
                 $options = $raw ? ['headers' => $headers] : ['headers' => $headers, 'json' => $body];
+
+                $this->log->debug('Sending API request', [
+                    'method' => $method,
+                    'uri' => $uri,
+                    'headers' => $headers,
+                    'body' => $raw ? 'raw' : json_encode($body),
+                ]);
 
                 $start = microtime(true);
                 $response = $this->client->request($method, $uri, $options);
@@ -142,6 +153,7 @@ class ShopwareClient
                         'method' => $method,
                         'uri' => $uri,
                         'error' => $e->getMessage(),
+                        'response' => $e->hasResponse() ? (string) $e->getResponse()->getBody() : 'No response',
                     ]);
                     throw new ApiException("API request failed: {$e->getMessage()}");
                 }
