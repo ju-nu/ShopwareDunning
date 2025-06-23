@@ -1,4 +1,7 @@
 /vendor/
-/logs/
-.env
-composer.lock
+/.env
+/config/shops.json
+/logs/*.log
+/logs/dry-run/*
+!/logs/.gitkeep
+!/logs/dry-run/.gitkeep

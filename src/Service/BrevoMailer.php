@@ -2,184 +2,72 @@
 
 declare(strict_types=1);
 
-namespace JunuDunning\Service;
+namespace Junu\Dunning\Service;
 
 use Brevo\Client\Api\TransactionalEmailsApi;
 use Brevo\Client\Configuration;
 use Brevo\Client\Model\SendSmtpEmail;
-use JunuDunning\Config\ShopConfig;
+use GuzzleHttp\Client;
 use Monolog\Logger;
 
 /**
- * Sends emails via Brevo API.
+ * Handles email sending via Brevo API.
  */
-final class BrevoMailer
+class BrevoMailer
 {
-    /**
-     * Send a no-invoice notification email.
-     */
-    public function sendNoInvoiceEmail(ShopConfig $config, string $orderNumber, Logger $logger): void
+    private TransactionalEmailsApi $api;
+    private Logger $log;
+    private bool $dryRun;
+
+    public function __construct(string $apiKey, Logger $log, bool $dryRun)
     {
-        $email = new SendSmtpEmail([
-            'sender' => ['name' => 'No Reply', 'email' => 'no-reply@' . $config->salesChannelDomain],
-            'to' => [['email' => $config->noInvoiceEmail]],
-            'subject' => 'Order without Invoice: ' . $orderNumber,
-            'htmlContent' => '<p>Please check order ' . htmlspecialchars($orderNumber) . ' for its invoice or remove it from the dunning cycle.</p>',
-        ]);
-
-        $this->send($config, $email, $logger, [
-            'orderNumber' => $orderNumber,
-            'sales_channel_id' => $config->salesChannelId,
-        ]);
+        $config = Configuration::getDefaultConfiguration()->setApiKey('api-key', $apiKey);
+        $this->api = new TransactionalEmailsApi(new Client(), $config);
+        $this->log = $log;
+        $this->dryRun = $dryRun;
     }
 
-    /**
-     * Send a dunning email with invoice attachment.
-     *
-     * @param array<string, mixed> $order
-     * @param array<string, mixed> $invoice
-     */
-    public function sendDunningEmail(
-        ShopConfig $config,
-        array $order,
-        array $invoice,
-        string $stage,
-        string $pdfContent,
-        Logger $logger
+    public function sendEmail(
+        string $toEmail,
+        string $senderEmail,
+        string $subject,
+        string $htmlContent,
+        ?string $attachmentPath = null,
+        ?string $attachmentName = null
     ): void {
-        $this->prepareAndSendEmail($config, $order, $invoice, $stage, $pdfContent, $logger, false);
-    }
-
-    /**
-     * Log a dunning email for dry-run mode.
-     *
-     * @param array<string, mixed> $order
-     * @param array<string, mixed> $invoice
-     */
-    public function sendDryRunDunningEmail(
-        ShopConfig $config,
-        array $order,
-        array $invoice,
-        string $stage,
-        string $pdfContent,
-        Logger $logger
-    ): void {
-        $this->prepareAndSendEmail($config, $order, $invoice, $stage, $pdfContent, $logger, true);
-    }
-
-    /**
-     * Prepare and send (or log) an email.
-     *
-     * @param array<string, mixed> $order
-     * @param array<string, mixed> $invoice
-     */
-    private function prepareAndSendEmail(
-        ShopConfig $config,
-        array $order,
-        array $invoice,
-        string $stage,
-        string $pdfContent,
-        Logger $logger,
-        bool $isDryRun
-    ): void {
-        $orderNumber = $order['orderNumber'];
-        $customerEmail = $order['orderCustomer']['email'] ?? null;
-
-        if (!$customerEmail) {
-            $logger->warning('No customer email found', [
-                'orderNumber' => $orderNumber,
-                'sales_channel_id' => $config->salesChannelId,
+        if ($this->dryRun) {
+            $this->log->info('[DRY-RUN] Simulated email sending', [
+                'to' => $toEmail,
+                'subject' => $subject,
+                'content_length' => strlen($htmlContent),
+                'attachment' => $attachmentPath ?? 'none',
             ]);
             return;
         }
-
-        $templateFile = __DIR__ . '/../../templates/' . $config->{"{$stage}Template"};
-        if (!file_exists($templateFile)) {
-            $logger->error('Email template not found', [
-                'template' => $templateFile,
-                'sales_channel_id' => $config->salesChannelId,
-            ]);
-            return;
-        }
-        $template = file_get_contents($templateFile);
-
-        $formatter = new \IntlDateFormatter(
-            'de_DE',
-            \IntlDateFormatter::LONG,
-            \IntlDateFormatter::NONE,
-            'Europe/Berlin'
-        );
-
-        $orderDate = new \DateTime($order['orderDateTime']);
-        $dueDate = (new \DateTime())->modify("+{$config->dueDays} days");
-
-        $replacements = [
-            '##FIRSTNAME##' => htmlspecialchars($order['billingAddress']['firstName'] ?? ''),
-            '##LASTNAME##' => htmlspecialchars($order['billingAddress']['lastName'] ?? ''),
-            '##ORDERID##' => htmlspecialchars($orderNumber),
-            '##ORDERDATE##' => $formatter->format($orderDate) ?: 'N/A',
-            '##ORDERAMOUNT##' => number_format($order['amountTotal'] ?? 0, 2, ',', '.') . ' EUR',
-            '##INVOICENUM##' => htmlspecialchars($invoice['documentNumber'] ?? 'N/A'),
-            '##DUEDATE##' => $formatter->format($dueDate) ?: 'N/A',
-            '##DUEDAYS##' => $config->dueDays,
-            '##SALESCHANNEL##' => htmlspecialchars($order['salesChannel']['name'] ?? 'Unknown'),
-            '##CUSTOMERCOMMENT##' => htmlspecialchars($order['orderCustomer']['customerComment'] ?? 'No comment provided'),
-        ];
-
-        $content = str_replace(array_keys($replacements), array_values($replacements), $template);
-
-        $email = new SendSmtpEmail([
-            'sender' => ['name' => 'No Reply', 'email' => 'no-reply@' . $config->salesChannelDomain],
-            'to' => [['email' => $customerEmail]],
-            'subject' => match ($stage) {
-                'ze' => 'Zahlungserinnerung für Bestellung ' . $orderNumber,
-                'mahnung1' => 'Erste Mahnung für Bestellung ' . $orderNumber,
-                'mahnung2' => 'Zweite Mahnung für Bestellung ' . $orderNumber,
-                default => 'Mahnung für Bestellung ' . $orderNumber,
-            },
-            'htmlContent' => $content,
-            'attachment' => [
-                [
-                    'content' => base64_encode($pdfContent),
-                    'name' => 'rechnung_' . $orderNumber . '.pdf',
-                ],
-            ],
-        ]);
-
-        if ($isDryRun) {
-            $logger->info('[DRY-RUN] Would send email', [
-                'orderNumber' => $orderNumber,
-                'stage' => $stage,
-                'to' => $customerEmail,
-                'subject' => $email->getSubject(),
-                'content_length' => strlen($content),
-                'sales_channel_id' => $config->salesChannelId,
-            ]);
-        } else {
-            $this->send($config, $email, $logger, [
-                'orderNumber' => $orderNumber,
-                'stage' => $stage,
-                'sales_channel_id' => $config->salesChannelId,
-            ]);
-        }
-    }
-
-    /**
-     * Send an email via Brevo API.
-     *
-     * @param array<string, mixed> $context
-     */
-    private function send(ShopConfig $config, SendSmtpEmail $email, Logger $logger, array $context): void
-    {
-        $apiConfig = Configuration::getDefaultConfiguration()->setApiKey('api-key', $config->brevoApiKey);
-        $api = new TransactionalEmailsApi(null, $apiConfig);
 
         try {
-            $api->sendTransacEmail($email);
-            $logger->info('Sent email', $context);
+            $email = new SendSmtpEmail([
+                'to' => [['email' => $toEmail]],
+                'sender' => ['email' => $senderEmail, 'name' => 'Dunning System'],
+                'subject' => $subject,
+                'htmlContent' => $htmlContent,
+            ]);
+
+            if ($attachmentPath && $attachmentName) {
+                $email->setAttachment([[
+                    'content' => base64_encode(file_get_contents($attachmentPath)),
+                    'name' => $attachmentName,
+                ]]);
+            }
+
+            $this->api->sendTransacEmail($email);
+            $this->log->info('Email sent successfully', ['to' => $toEmail, 'subject' => $subject]);
         } catch (\Exception $e) {
-            $logger->error('Failed to send email', array_merge($context, ['error' => $e->getMessage()]));
+            $this->log->error('Failed to send email', [
+                'to' => $toEmail,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
         }
     }
 }
-?>

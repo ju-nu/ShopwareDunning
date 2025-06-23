@@ -2,107 +2,83 @@
 
 declare(strict_types=1);
 
-namespace JunuDunning\Config;
+namespace Junu\Dunning\Config;
 
-use JunuDunning\Exception\ConfigurationException;
+use Junu\Dunning\Exception\ConfigurationException;
 
 /**
- * Represents a single sales channel's configuration.
+ * Manages and validates sales channel configurations from a JSON file.
  */
-final class ShopConfig
+class ShopConfig
 {
-    public readonly string $url;
-    public readonly string $apiKey;
-    public readonly string $apiSecret;
-    public readonly string $salesChannelId;
-    public readonly string $salesChannelDomain;
-    public readonly string $brevoApiKey;
-    public readonly string $noInvoiceEmail;
-    public readonly string $zeTemplate;
-    public readonly string $mahnung1Template;
-    public readonly string $mahnung2Template;
-    public readonly int $dueDays;
+    private array $shops = [];
 
-    public function __construct(
-        string $url,
-        string $apiKey,
-        string $apiSecret,
-        string $salesChannelId,
-        string $salesChannelDomain,
-        string $brevoApiKey,
-        string $noInvoiceEmail,
-        string $zeTemplate,
-        string $mahnung1Template,
-        string $mahnung2Template,
-        int $dueDays
-    ) {
-        if (!preg_match('/^[0-9a-f]{32}$/i', $salesChannelId)) {
-            throw new ConfigurationException("Invalid sales_channel_id: {$salesChannelId}");
+    /**
+     * @throws ConfigurationException
+     */
+    public function __construct(string $configPath)
+    {
+        if (!file_exists($configPath)) {
+            throw new ConfigurationException("Configuration file not found: $configPath");
         }
 
-        $this->url = rtrim($url, '/');
-        $this->apiKey = $apiKey;
-        $this->apiSecret = $apiSecret;
-        $this->salesChannelId = $salesChannelId;
-        $this->salesChannelDomain = $salesChannelDomain;
-        $this->brevoApiKey = $brevoApiKey;
-        $this->noInvoiceEmail = $noInvoiceEmail;
-        $this->zeTemplate = $zeTemplate;
-        $this->mahnung1Template = $mahnung1Template;
-        $this->mahnung2Template = $mahnung2Template;
-        $this->dueDays = max(1, $dueDays);
+        $json = file_get_contents($configPath);
+        $data = json_decode($json, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new ConfigurationException('Invalid JSON in configuration file: ' . json_last_error_msg());
+        }
+
+        if (!is_array($data)) {
+            throw new ConfigurationException('Configuration must be an array of shop configurations');
+        }
+
+        foreach ($data as $index => $shop) {
+            $this->validateShopConfig($shop, $index);
+            $this->shops[] = $shop;
+        }
     }
 
     /**
-     * Load sales channel configurations from environment.
-     *
-     * @return self[]
      * @throws ConfigurationException
      */
-    public static function fromEnv(): array
+    private function validateShopConfig(array $shop, int $index): void
     {
-        $raw = json_decode($_ENV['SHOPWARE_SYSTEMS'] ?? '[]', true, 512, JSON_THROW_ON_ERROR);
-        $shops = [];
+        $required = [
+            'url',
+            'api_key',
+            'api_secret',
+            'sales_channel_id',
+            'sales_channel_domain',
+            'brevo_api_key',
+            'no_invoice_email',
+            'ze_template',
+            'mahnung1_template',
+            'mahnung2_template',
+            'due_days',
+        ];
 
-        foreach ($raw as $index => $config) {
-            if (
-                !isset(
-                    $config['url'],
-                    $config['api_key'],
-                    $config['api_secret'],
-                    $config['sales_channel_id'],
-                    $config['sales_channel_domain'],
-                    $config['brevo_api_key'],
-                    $config['no_invoice_email'],
-                    $config['ze_template'],
-                    $config['mahnung1_template'],
-                    $config['mahnung2_template'],
-                    $config['due_days']
-                )
-            ) {
-                throw new ConfigurationException("Incomplete configuration at index {$index}");
+        foreach ($required as $key) {
+            if (!isset($shop[$key]) || empty($shop[$key])) {
+                throw new ConfigurationException("Missing or empty '$key' in shop configuration at index $index");
             }
-
-            $shops[] = new self(
-                $config['url'],
-                $config['api_key'],
-                $config['api_secret'],
-                $config['sales_channel_id'],
-                $config['sales_channel_domain'],
-                $config['brevo_api_key'],
-                $config['no_invoice_email'],
-                $config['ze_template'],
-                $config['mahnung1_template'],
-                $config['mahnung2_template'],
-                (int) $config['due_days']
-            );
         }
 
-        if (empty($shops)) {
-            throw new ConfigurationException('No configurations found in SHOPWARE_SYSTEMS');
+        if (!preg_match('/^[a-f0-9]{32}$/i', $shop['sales_channel_id'])) {
+            throw new ConfigurationException("Invalid sales_channel_id in shop configuration at index $index");
         }
 
-        return $shops;
+        if (!filter_var($shop['no_invoice_email'], FILTER_VALIDATE_EMAIL)) {
+            throw new ConfigurationException("Invalid no_invoice_email in shop configuration at index $index");
+        }
+
+        if (!is_int($shop['due_days']) || $shop['due_days'] <= 0) {
+            throw new ConfigurationException("Invalid due_days in shop configuration at index $index");
+        }
+    }
+
+    public function getShops(): array
+    {
+        return $this->shops;
     }
 }
-?>

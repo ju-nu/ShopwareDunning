@@ -2,12 +2,11 @@
 
 declare(strict_types=1);
 
-namespace JunuDunning\Exception;
+namespace Junu\Dunning\Exception;
 
 /**
- * Exception for Shopware API errors.
+ * Exception for API-related errors.
  */
-final class ApiException extends \RuntimeException
+class ApiException extends \Exception
 {
 }
-?>

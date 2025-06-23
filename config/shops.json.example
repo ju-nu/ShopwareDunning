@@ -1,0 +1,28 @@
+[
+    {
+        "url": "https://shop.example.com",
+        "api_key": "key1",
+        "api_secret": "secret1",
+        "sales_channel_id": "uuid1-32-char-uuid-1234567890ab",
+        "sales_channel_domain": "channel1.example.com",
+        "brevo_api_key": "brevo_key1",
+        "no_invoice_email": "auftrag@channel1.example.com",
+        "ze_template": "ze.html",
+        "mahnung1_template": "mahnung1.html",
+        "mahnung2_template": "mahnung2.html",
+        "due_days": 10
+    },
+    {
+        "url": "https://shop.example.com",
+        "api_key": "key2",
+        "api_secret": "secret2",
+        "sales_channel_id": "uuid2-32-char-uuid-1234567890ac",
+        "sales_channel_domain": "channel2.example.com",
+        "brevo_api_key": "brevo_key2",
+        "no_invoice_email": "auftrag@channel2.example.com",
+        "ze_template": "ze.html",
+        "mahnung1_template": "mahnung1.html",
+        "mahnung2_template": "mahnung2.html",
+        "due_days": 10
+    }
+]

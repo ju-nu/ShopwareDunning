@@ -2,12 +2,11 @@
 
 declare(strict_types=1);
 
-namespace JunuDunning\Exception;
+namespace Junu\Dunning\Exception;
 
 /**
- * Exception for configuration errors.
+ * Exception for configuration-related errors.
  */
-final class ConfigurationException extends \RuntimeException
+class ConfigurationException extends \Exception
 {
 }
-?>

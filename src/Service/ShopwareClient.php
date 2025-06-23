@@ -2,186 +2,181 @@
 
 declare(strict_types=1);
 
-namespace JunuDunning\Service;
+namespace Junu\Dunning\Service;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
-use JunuDunning\Config\ShopConfig;
-use JunuDunning\Exception\ApiException;
+use Junu\Dunning\Exception\ApiException;
 use Monolog\Logger;
 use Psr\Http\Message\ResponseInterface;
 
 /**
- * Shopware API client with token management and retry logic.
+ * Handles Shopware Admin API interactions with OAuth and retry logic.
  */
-final class ShopwareClient
+class ShopwareClient
 {
-    private string $token;
-    private float $tokenExpiresAt;
+    private Client $client;
+    private Logger $log;
+    private string $baseUrl;
+    private string $apiKey;
+    private string $apiSecret;
+    private string $salesChannelId;
+    private ?string $accessToken = null;
+    private int $tokenExpiresAt = 0;
 
     public function __construct(
-        private readonly Client $httpClient,
-        private readonly ShopConfig $config,
-        private readonly Logger $logger
+        string $baseUrl,
+        string $apiKey,
+        string $apiSecret,
+        string $salesChannelId,
+        Logger $log
     ) {
-        $this->token = '';
-        $this->tokenExpiresAt = 0.0;
+        $this->baseUrl = rtrim($baseUrl, '/');
+        $this->apiKey = $apiKey;
+        $this->apiSecret = $apiSecret;
+        $this->salesChannelId = $salesChannelId;
+        $this->log = $log;
+        $this->client = new Client(['base_uri' => $this->baseUrl]);
     }
 
     /**
-     * Fetch orders with "reminded" transaction state for the sales channel.
-     *
-     * @return array<array<string, mixed>>
+     * @throws ApiException
      */
-    public function fetchRemindedOrders(): array
+    public function searchOrders(): array
     {
-        $start = microtime(true);
-        try {
-            $response = $this->request('POST', '/api/search/order', [
-                'associations' => [
-                    'transactions' => ['associations' => ['stateMachineState' => []]],
-                    'tags' => [],
-                    'documents' => ['associations' => ['documentType' => []]],
-                    'billingAddress' => [],
-                    'orderCustomer' => [],
-                    'salesChannel' => [],
-                ],
-                'filter' => [
-                    [
-                        'type' => 'equals',
-                        'field' => 'transactions.stateMachineState.technicalName',
-                        'value' => 'reminded',
-                    ],
-                    [
-                        'type' => 'equals',
-                        'field' => 'salesChannelId',
-                        'value' => $this->config->salesChannelId,
-                    ],
-                    [
-                        'type' => 'not',
-                        'queries' => [
-                            ['type' => 'equals', 'field' => 'tags.name', 'value' => 'Mahnlauf ignorieren'],
-                        ],
-                    ],
-                ],
-            ]);
-
-            $data = json_decode($response->getBody()->getContents(), true, 512, JSON_THROW_ON_ERROR);
-            $this->logger->debug('Fetched orders', [
-                'count' => count($data['data'] ?? []),
-                'duration' => microtime(true) - $start,
-                'sales_channel_id' => $this->config->salesChannelId,
-            ]);
-
-            return $data['data'] ?? [];
-        } catch (\Exception $e) {
-            $this->logger->error('Failed to fetch orders', [
-                'url' => $this->config->url,
-                'sales_channel_id' => $this->config->salesChannelId,
-                'error' => $e->getMessage(),
-            ]);
-            return [];
-        }
+        return $this->request('POST', '/api/search/order', [
+            'filter' => [
+                ['type' => 'equals', 'field' => 'salesChannelId', 'value' => $this->salesChannelId],
+                ['type' => 'equals', 'field' => 'transactions.stateMachineState.technicalName', 'value' => 'reminded'],
+                ['type' => 'equals', 'field' => 'customFields.junu_dunning_ignore', 'value' => false],
+            ],
+            'associations' => ['transactions', 'documents', 'tags', 'billingAddress'],
+            'includes' => [
+                'order' => ['id', 'orderNumber', 'amountTotal', 'orderDateTime', 'salesChannelId', 'customFields', 'transactions', 'documents', 'tags', 'billingAddress'],
+                'transaction' => ['stateMachineState'],
+                'document' => ['documentType', 'id'],
+                'document_type' => ['technicalName'],
+                'tag' => ['name'],
+                'address' => ['firstName', 'lastName', 'email'],
+            ],
+        ]);
     }
 
     /**
-     * Download invoice PDF for a document.
+     * @throws ApiException
+     */
+    public function addTag(string $orderId, string $tagName): void
+    {
+        $tagId = $this->getTagId($tagName);
+        $this->request('POST', "/api/order/{$orderId}/tags", [
+            'id' => $tagId,
+        ]);
+    }
+
+    /**
+     * @throws ApiException
+     */
+    public function updateCustomFields(string $orderId, array $customFields): void
+    {
+        $this->request('PATCH', "/api/order/{$orderId}", [
+            'customFields' => $customFields,
+        ]);
+    }
+
+    /**
+     * @throws ApiException
      */
     public function downloadInvoice(string $documentId): string
     {
-        $response = $this->request('GET', "/api/document/{$documentId}/download");
+        $response = $this->request('GET', "/api/document/{$documentId}/download", [], true);
         return $response->getBody()->getContents();
     }
 
     /**
-     * Update an order with tags and custom fields.
-     *
-     * @param array<string, mixed> $payload
+     * @throws ApiException
      */
-    public function updateOrder(string $orderId, array $payload): void
+    private function getTagId(string $tagName): string
     {
-        $this->request('PATCH', "/api/order/{$orderId}", $payload);
+        $response = $this->request('POST', '/api/search/tag', [
+            'filter' => [['type' => 'equals', 'field' => 'name', 'value' => $tagName]],
+        ]);
+
+        if (empty($response['data'])) {
+            $response = $this->request('POST', '/api/tag', ['name' => $tagName]);
+            return $response['data']['id'];
+        }
+
+        return $response['data'][0]['id'];
     }
 
     /**
-     * Perform an API request with token management and retries.
-     *
-     * @param array<string, mixed> $body
+     * @throws ApiException
      */
-    private function request(string $method, string $endpoint, array $body = []): ResponseInterface
+    private function request(string $method, string $uri, array $body = [], bool $raw = false): array|string
     {
-        $maxRetries = 3;
-        $attempt = 0;
+        $attempts = 0;
+        $maxAttempts = 3;
 
-        while ($attempt < $maxRetries) {
+        while ($attempts < $maxAttempts) {
             try {
-                $headers = ['Authorization' => 'Bearer ' . $this->getToken()];
-                $options = $method === 'GET' ? ['headers' => $headers] : ['headers' => $headers, 'json' => $body];
+                $headers = ['Authorization' => 'Bearer ' . $this->getAccessToken()];
+                $options = $raw ? ['headers' => $headers] : ['headers' => $headers, 'json' => $body];
 
-                return $this->httpClient->request($method, $this->config->url . $endpoint, $options);
+                $start = microtime(true);
+                $response = $this->client->request($method, $uri, $options);
+                $this->log->debug('API request successful', [
+                    'method' => $method,
+                    'uri' => $uri,
+                    'time_ms' => (microtime(true) - $start) * 1000,
+                ]);
+
+                return $raw ? $response : json_decode($response->getBody()->getContents(), true);
             } catch (RequestException $e) {
-                $attempt++;
-                if ($e->getResponse()?->getStatusCode() === 401 || $this->token === '') {
-                    $this->refreshToken();
+                $attempts++;
+                if ($e->getCode() === 401 && $attempts === 1) {
+                    $this->accessToken = null;
                     continue;
                 }
-                if ($attempt >= $maxRetries) {
-                    throw new ApiException("Failed to request {$endpoint}: {$e->getMessage()}", 0, $e);
+                if ($attempts >= $maxAttempts) {
+                    $this->log->error('API request failed', [
+                        'method' => $method,
+                        'uri' => $uri,
+                        'error' => $e->getMessage(),
+                    ]);
+                    throw new ApiException("API request failed: {$e->getMessage()}");
                 }
-                $this->logger->warning('Retrying request', [
-                    'endpoint' => $endpoint,
-                    'attempt' => $attempt,
-                    'sales_channel_id' => $this->config->salesChannelId,
-                    'error' => $e->getMessage(),
-                ]);
-                usleep(500000 * $attempt); // Exponential backoff
+                usleep((2 ** $attempts) * 100000);
             }
         }
 
-        throw new ApiException("Failed to request {$endpoint} after {$maxRetries} attempts");
+        throw new ApiException('Unexpected error in API request');
     }
 
     /**
-     * Get or refresh the access token.
-     */
-    private function getToken(): string
-    {
-        if ($this->token === '' || microtime(true) >= $this->tokenExpiresAt) {
-            $this->refreshToken();
-        }
-        return $this->token;
-    }
-
-    /**
-     * Refresh the access token.
-     *
      * @throws ApiException
      */
-    private function refreshToken(): void
+    private function getAccessToken(): string
     {
+        if ($this->accessToken && $this->tokenExpiresAt > time() + 60) {
+            return $this->accessToken;
+        }
+
         try {
-            $response = $this->httpClient->post($this->config->url . '/api/oauth/token', [
-                'json' => [
-                    'client_id' => $this->config->apiKey,
-                    'client_secret' => $this->config->apiSecret,
+            $response = $this->client->post('/api/oauth/token', [
+                'form_params' => [
                     'grant_type' => 'client_credentials',
+                    'client_id' => $this->apiKey,
+                    'client_secret' => $this->apiSecret,
                 ],
             ]);
-            $data = json_decode($response->getBody()->getContents(), true, 512, JSON_THROW_ON_ERROR);
-            $this->token = $data['access_token'];
-            $this->tokenExpiresAt = microtime(true) + ($data['expires_in'] - 60); // Buffer for safety
-            $this->logger->debug('Refreshed token', [
-                'url' => $this->config->url,
-                'sales_channel_id' => $this->config->salesChannelId,
-            ]);
-        } catch (\Exception $e) {
-            $this->logger->error('Failed to refresh token', [
-                'url' => $this->config->url,
-                'sales_channel_id' => $this->config->salesChannelId,
-                'error' => $e->getMessage(),
-            ]);
-            throw new ApiException('Failed to authenticate: ' . $e->getMessage(), 0, $e);
+
+            $data = json_decode($response->getBody()->getContents(), true);
+            $this->accessToken = $data['access_token'];
+            $this->tokenExpiresAt = time() + $data['expires_in'];
+            return $this->accessToken;
+        } catch (RequestException $e) {
+            $this->log->error('Failed to obtain access token', ['error' => $e->getMessage()]);
+            throw new ApiException('Failed to obtain access token: ' . $e->getMessage());
         }
     }
 }
-?>

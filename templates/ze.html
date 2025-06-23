@@ -1,41 +1,23 @@
 <!DOCTYPE html>
-<html lang="de">
+<html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zahlungserinnerung</title>
-    <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #f8f8f8; padding: 10px; text-align: center; }
-        .content { padding: 20px; }
-        .footer { font-size: 0.9em; color: #777; text-align: center; }
-    </style>
 </head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h2>Zahlungserinnerung</h2>
-        </div>
-        <div class="content">
-            <p>Sehr geehrte/r ##FIRSTNAME## ##LASTNAME##,</p>
-            <p>Wir möchten Sie daran erinnern, dass die Zahlung für Ihre Bestellung noch aussteht. Hier sind die Details:</p>
-            <ul>
-                <li><strong>Bestellnummer:</strong> ##ORDERID##</li>
-                <li><strong>Bestelldatum:</strong> ##ORDERDATE##</li>
-                <li><strong>Betrag:</strong> ##ORDERAMOUNT##</li>
-                <li><strong>Rechnungsnummer:</strong> ##INVOICENUM##</li>
-                <li><strong>Fälligkeitsdatum:</strong> ##DUEDATE## (in ##DUEDAYS## Tagen)</li>
-                <li><strong>Verkaufskanal:</strong> ##SALESCHANNEL##</li>
-                <li><strong>Kundenkommentar:</strong> ##CUSTOMERCOMMENT##</li>
-            </ul>
-            <p>Bitte begleichen Sie den offenen Betrag bis zum ##DUEDATE##. Die Rechnung finden Sie im Anhang.</p>
-            <p>Mit freundlichen Grüßen,</p>
-            <p>Ihr Shop-Team</p>
-        </div>
-        <div class="footer">
-            <p>Dies ist eine automatisch generierte E-Mail. Bitte antworten Sie nicht direkt auf diese Nachricht.</p>
-        </div>
-    </div>
+<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h2>Zahlungserinnerung</h2>
+    <p>Sehr geehrte(r) ##FIRSTNAME## ##LASTNAME##,</p>
+    <p>Wir möchten Sie daran erinnern, dass die Zahlung für Ihre Bestellung ##ORDERID## vom ##ORDERDATE## noch aussteht.</p>
+    <p><strong>Details:</strong></p>
+    <ul>
+        <li>Bestellnummer: ##ORDERID##</li>
+        <li>Bestelldatum: ##ORDERDATE##</li>
+        <li>Betrag: ##ORDERAMOUNT##</li>
+        <li>Rechnungsnummer: ##INVOICENUM##</li>
+        <li>Fälligkeitsdatum: ##DUEDATE## (in ##DUEDAYS## Tagen)</li>
+    </ul>
+    <p>Kundenkommentar: ##CUSTOMERCOMMENT##</p>
+    <p>Bitte begleichen Sie den offenen Betrag bis spätestens ##DUEDATE##. Die Rechnung ist dieser E-Mail angehängt.</p>
+    <p>Mit freundlichen Grüßen,<br>Ihr Team von ##SALESCHANNEL##</p>
 </body>
 </html>

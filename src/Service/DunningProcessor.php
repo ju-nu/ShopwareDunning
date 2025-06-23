@@ -2,208 +2,263 @@
 
 declare(strict_types=1);
 
-namespace JunuDunning\Service;
+namespace Junu\Dunning\Service;
 
-use GuzzleHttp\Client;
-use JunuDunning\Config\ShopConfig;
+use DateTime;
+use Junu\Dunning\Config\ShopConfig;
 use Monolog\Logger;
 
 /**
- * Processes orders for dunning.
+ * Processes orders and manages dunning logic for multiple sales channels.
  */
-final class DunningProcessor
+class DunningProcessor
 {
-    private const TAG_ZE = 'Billing: ZE';
-    private const TAG_MAHNUNG1 = 'Billing: Mahnung 1';
-    private const TAG_MAHNUNG2 = 'Billing: Mahnung 2';
+    private ShopConfig $config;
+    private Logger $log;
+    private bool $dryRun;
+    private bool $shouldShutdown = false;
 
-    public function __construct(
-        private readonly Client $httpClient,
-        private readonly BrevoMailer $mailer,
-        private readonly Logger $logger,
-        private readonly bool $isDryRun = false
-    ) {
+    public function __construct(ShopConfig $config, Logger $log, bool $dryRun)
+    {
+        $this->config = $config;
+        $this->log = $log;
+        $this->dryRun = $dryRun;
     }
 
-    /**
-     * Process all orders for a sales channel.
-     */
-    public function processShop(ShopwareClient $client, ShopConfig $config): void
+    public function process(): void
     {
-        $orders = $client->fetchRemindedOrders();
-        $this->logger->info('Processing orders', [
-            'url' => $config->url,
-            'sales_channel_id' => $config->salesChannelId,
-            'order_count' => count($orders),
-            'dry_run' => $this->isDryRun,
-        ]);
+        foreach ($this->config->getShops() as $shop) {
+            if ($this->shouldShutdown) {
+                $this->log->info('Shutdown requested, stopping processing');
+                break;
+            }
 
-        foreach ($orders as $order) {
-            $this->processOrder($client, $config, $order);
-            usleep(50000); // 50ms delay to avoid API rate limits
+            $this->processSalesChannel($shop);
+            usleep(100000); // 100ms delay between sales channels
         }
     }
 
-    /**
-     * Process a single order.
-     *
-     * @param array<string, mixed> $order
-     */
-    private function processOrder(ShopwareClient $client, ShopConfig $config, array $order): void
+    public function shutdown(): void
     {
-        $orderId = $order['id'];
-        $orderNumber = $order['orderNumber'];
+        $this->shouldShutdown = true;
+    }
 
-        try {
-            // Check for invoice
-            $invoice = null;
-            foreach ($order['documents'] ?? [] as $document) {
-                if (($document['documentType']['technicalName'] ?? '') === 'invoice') {
-                    $invoice = $document;
-                    break;
-                }
+    private function processSalesChannel(array $shop): void
+    {
+        $client = new ShopwareClient(
+            $shop['url'],
+            $shop['api_key'],
+            $shop['api_secret'],
+            $shop['sales_channel_id'],
+            $this->log
+        );
+
+        $mailer = new BrevoMailer($shop['brevo_api_key'], $this->log, $this->dryRun);
+
+        $orders = $client->searchOrders();
+        foreach ($orders['data'] as $order) {
+            if ($this->shouldShutdown) {
+                break;
             }
 
-            if ($invoice === null) {
-                if ($this->isDryRun) {
-                    $this->logger->info('[DRY-RUN] Would send no-invoice email', [
-                        'orderNumber' => $orderNumber,
-                        'sales_channel_id' => $config->salesChannelId,
-                    ]);
-                } else {
-                    $this->mailer->sendNoInvoiceEmail($config, $orderNumber, $this->logger);
-                }
-                $this->logger->info('No invoice found, skipping', [
-                    'orderNumber' => $orderNumber,
-                    'sales_channel_id' => $config->salesChannelId,
-                ]);
-                return;
-            }
-
-            // Check payment state
-            $isUnpaid = true;
-            foreach ($order['transactions'] ?? [] as $transaction) {
-                $state = $transaction['stateMachineState']['technicalName'] ?? '';
-                if (in_array($state, ['paid', 'partially_paid'], true)) {
-                    $isUnpaid = false;
-                    break;
-                }
-            }
-
-            if (!$isUnpaid) {
-                $this->logger->info('Order is paid or partially paid, skipping', [
-                    'orderNumber' => $orderNumber,
-                    'sales_channel_id' => $config->salesChannelId,
-                ]);
-                return;
-            }
-
-            // Determine dunning stage
-            $tags = array_column($order['tags'] ?? [], 'name');
-            $customFields = $order['customFields'] ?? [];
-            $now = time();
-            $dueSeconds = $config->dueDays * 24 * 60 * 60;
-
-            if (!in_array(self::TAG_ZE, $tags, true)) {
-                $this->handleDunningStage($client, $config, $order, $invoice, 'ze', self::TAG_ZE, 'junu_dunning_ze_sent_at', $now);
-            } elseif (
-                in_array(self::TAG_ZE, $tags, true)
-                && !in_array(self::TAG_MAHNUNG1, $tags, true)
-                && ($customFields['junu_dunning_ze_sent_at'] ?? 0) + $dueSeconds <= $now
-            ) {
-                $this->handleDunningStage($client, $config, $order, $invoice, 'mahnung1', self::TAG_MAHNUNG1, 'junu_dunning_mahnung1_sent_at', $now);
-            } elseif (
-                in_array(self::TAG_MAHNUNG1, $tags, true)
-                && !in_array(self::TAG_MAHNUNG2, $tags, true)
-                && ($customFields['junu_dunning_mahnung1_sent_at'] ?? 0) + $dueSeconds <= $now
-            ) {
-                $this->handleDunningStage($client, $config, $order, $invoice, 'mahnung2', self::TAG_MAHNUNG2, 'junu_dunning_mahnung2_sent_at', $now);
-            } else {
-                $this->logger->debug('No action needed', [
-                    'orderNumber' => $orderNumber,
-                    'sales_channel_id' => $config->salesChannelId,
-                ]);
-            }
-        } catch (\Exception $e) {
-            $this->logger->error('Failed to process order', [
-                'orderNumber' => $orderNumber,
-                'sales_channel_id' => $config->salesChannelId,
-                'error' => $e->getMessage(),
-            ]);
+            $this->processOrder($order, $client, $mailer, $shop);
+            usleep(50000); // 50ms delay between orders
         }
     }
 
-    /**
-     * Handle a dunning stage (send email and update order).
-     *
-     * @param array<string, mixed> $order
-     * @param array<string, mixed> $invoice
-     */
-    private function handleDunningStage(
-        ShopwareClient $client,
-        ShopConfig $config,
-        array $order,
-        array $invoice,
-        string $stage,
-        string $tag,
-        string $customField,
-        int $timestamp
-    ): void {
-        $orderId = $order['id'];
-        $orderNumber = $order['orderNumber'];
+    private function processOrder(array $order, ShopwareClient $client, BrevoMailer $mailer, array $shop): void
+    {
+        $context = [
+            'sales_channel_id' => $shop['sales_channel_id'],
+            'order_number' => $order['orderNumber'],
+        ];
 
-        // Download invoice
-        try {
-            $pdfContent = $client->downloadInvoice($invoice['id']);
-            $this->saveDryRunInvoice($config, $orderNumber, $invoice['id'], $pdfContent);
-        } catch (\Exception $e) {
-            $this->logger->error('Failed to download invoice', [
-                'orderNumber' => $orderNumber,
-                'sales_channel_id' => $config->salesChannelId,
-                'error' => $e->getMessage(),
-            ]);
+        // Check transaction state
+        $transactionState = $order['transactions'][0]['stateMachineState']['technicalName'] ?? '';
+        if (in_array($transactionState, ['paid', 'partially_paid'], true)) {
+            $this->log->info('Skipping paid order', $context);
             return;
         }
 
-        if ($this->isDryRun) {
-            $this->logger->info("[DRY-RUN] Would send {$stage} email", [
-                'orderNumber' => $orderNumber,
-                'sales_channel_id' => $config->salesChannelId,
-            ]);
-            $this->logger->info("[DRY-RUN] Would update order with tag: {$tag}, customField: {$customField}={$timestamp}", [
-                'orderId' => $orderId,
-                'sales_channel_id' => $config->salesChannelId,
-            ]);
-            $this->mailer->sendDryRunDunningEmail($config, $order, $invoice, $stage, $pdfContent, $this->logger);
-        } else {
-            $this->mailer->sendDunningEmail($config, $order, $invoice, $stage, $pdfContent, $this->logger);
-            $client->updateOrder($orderId, [
-                'tags' => [['name' => $tag]],
-                'customFields' => array_merge($customFields, [$customField => $timestamp]),
-            ]);
-            $this->logger->info("Sent {$stage} email", [
-                'orderNumber' => $orderNumber,
-                'sales_channel_id' => $config->salesChannelId,
-            ]);
+        // Check for invoice
+        $invoice = null;
+        foreach ($order['documents'] as $doc) {
+            if ($doc['documentType']['technicalName'] === 'invoice') {
+                $invoice = $doc;
+                break;
+            }
+        }
+
+        if (!$invoice) {
+            $this->handleNoInvoice($order, $mailer, $shop, $context);
+            return;
+        }
+
+        // Determine dunning stage
+        $tags = array_column($order['tags'], 'name');
+        $customFields = $order['customFields'] ?? [];
+        $stage = $this->determineDunningStage($tags, $customFields, $shop['due_days']);
+
+        if ($stage === null) {
+            $this->log->info('No further dunning action required', $context);
+            return;
+        }
+
+        $this->sendDunningEmail($order, $invoice, $stage, $client, $mailer, $shop, $context);
+    }
+
+    private function handleNoInvoice(array $order, BrevoMailer $mailer, array $shop, array $context): void
+    {
+        $subject = "Missing Invoice for Order {$order['orderNumber']}";
+        $content = "Order {$order['orderNumber']} has no invoice document.";
+        
+        if ($this->dryRun) {
+            $this->log->info('[DRY-RUN] Simulated no-invoice email', array_merge($context, [
+                'to' => $shop['no_invoice_email'],
+                'subject' => $subject,
+            ]));
+            return;
+        }
+
+        try {
+            $mailer->sendEmail(
+                $shop['no_invoice_email'],
+                "no-reply@{$shop['sales_channel_domain']}",
+                $subject,
+                $content
+            );
+        } catch (\Exception $e) {
+            $this->log->error('Failed to send no-invoice email', array_merge($context, ['error' => $e->getMessage()]));
         }
     }
 
-    /**
-     * Save invoice PDF to dry-run folder.
-     */
-    private function saveDryRunInvoice(ShopConfig $config, string $orderNumber, string $documentId, string $pdfContent): void
+    private function determineDunningStage(array $tags, array $customFields, int $dueDays): ?string
     {
-        $dir = __DIR__ . '/../../dry-run/' . $config->salesChannelId;
-        if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+        $now = time();
+        $dueSeconds = $dueDays * 86400;
+
+        if (!in_array('Mahnwesen: Zahlungserinnerung', $tags, true)) {
+            return 'Zahlungserinnerung';
         }
-        $file = "{$dir}/{$orderNumber}_{$documentId}.pdf";
-        file_put_contents($file, $pdfContent);
-        $this->logger->info('Saved invoice to dry-run folder', [
-            'file' => $file,
-            'orderNumber' => $orderNumber,
-            'sales_channel_id' => $config->salesChannelId,
-        ]);
+
+        $zeSentAt = $customFields['junu_dunning_1_sent_at'] ?? 0;
+        if (in_array('Mahnwesen: Zahlungserinnerung', $tags, true) && 
+            !in_array('Mahnwesen: Mahnung 1', $tags, true) && 
+            $zeSentAt && ($now - $zeSentAt) >= $dueSeconds) {
+            return 'Mahnung 1';
+        }
+
+        $ma1SentAt = $customFields['junu_dunning_2_sent_at'] ?? 0;
+        if (in_array('Mahnwesen: Mahnung 1', $tags, true) && 
+            !in_array('Mahnwesen: Mahnung 2', $tags, true) && 
+            $ma1SentAt && ($now - $ma1SentAt) >= $dueSeconds) {
+            return 'Mahnung 2';
+        }
+
+        return null;
+    }
+
+    private function sendDunningEmail(
+        array $order,
+        array $invoice,
+        string $stage,
+        ShopwareClient $client,
+        BrevoMailer $mailer,
+        array $shop,
+        array $context
+    ): void {
+        $templateMap = [
+            'Zahlungserinnerung' => $shop['ze_template'],
+            'Mahnung 1' => $shop['mahnung1_template'],
+            'Mahnung 2' => $shop['mahnung2_template'],
+        ];
+        $tagMap = [
+            'Zahlungserinnerung' => 'Mahnwesen: Zahlungserinnerung',
+            'Mahnung 1' => 'Mahnwesen: Mahnung 1',
+            'Mahnung 2' => 'Mahnwesen: Mahnung 2',
+        ];
+        $fieldMap = [
+            'Zahlungserinnerung' => 'junu_dunning_1_sent_at',
+            'Mahnung 1' => 'junu_dunning_2_sent_at',
+            'Mahnung 2' => 'junu_dunning_3_sent_at',
+        ];
+
+        $templateFile = __DIR__ . '/../../templates/' . $templateMap[$stage];
+        if (!file_exists($templateFile)) {
+            $this->log->error('Template not found', array_merge($context, ['template' => $templateFile]));
+            return;
+        }
+
+        $html = file_get_contents($templateFile);
+        $replacements = $this->prepareEmailReplacements($order, $invoice, $shop);
+        $html = str_replace(array_keys($replacements), array_values($replacements), $html);
+
+        // Download invoice for attachment or dry-run storage
+        $invoiceContent = $client->downloadInvoice($invoice['id']);
+        $invoicePath = null;
+        if ($this->dryRun) {
+            $dir = __DIR__ . "/../../logs/dry-run/{$shop['sales_channel_id']}";
+            if (!is_dir($dir)) {
+                mkdir($dir, 0777, true);
+            }
+            $invoicePath = "$dir/{$order['orderNumber']}_{$invoice['id']}.pdf";
+            file_put_contents($invoicePath, $invoiceContent);
+        } else {
+            $invoicePath = sys_get_temp_dir() . "/{$order['orderNumber']}_{$invoice['id']}.pdf";
+            file_put_contents($invoicePath, $invoiceContent);
+        }
+
+        $email = $order['billingAddress']['email'] ?? $shop['no_invoice_email'];
+        $subject = match ($stage) {
+            'Zahlungserinnerung' => "Zahlungserinnerung für Bestellung {$order['orderNumber']}",
+            'Mahnung 1' => "Erste Mahnung für Bestellung {$order['orderNumber']}",
+            'Mahnung 2' => "Zweite Mahnung für Bestellung {$order['orderNumber']}",
+        };
+
+        try {
+            $mailer->sendEmail(
+                $email,
+                "no-reply@{$shop['sales_channel_domain']}",
+                $subject,
+                $html,
+                $invoicePath,
+                "Rechnung_{$order['orderNumber']}.pdf"
+            );
+
+            if (!$this->dryRun) {
+                $client->addTag($order['id'], $tagMap[$stage]);
+                $client->updateCustomFields($order['id'], [
+                    $fieldMap[$stage] => time(),
+                ]);
+            }
+
+            $this->log->info("Processed dunning stage: $stage", $context);
+        } catch (\Exception $e) {
+            $this->log->error("Failed to process dunning stage: $stage", array_merge($context, ['error' => $e->getMessage()]));
+        } finally {
+            if ($invoicePath && !$this->dryRun && file_exists($invoicePath)) {
+                unlink($invoicePath);
+            }
+        }
+    }
+
+    private function prepareEmailReplacements(array $order, array $invoice, array $shop): array
+    {
+        $orderDate = (new DateTime($order['orderDateTime']))->format('d. F Y');
+        $dueDate = (new DateTime())->modify("+{$shop['due_days']} days")->format('d. F Y');
+        $amount = number_format($order['amountTotal'], 2, ',', '.') . ' EUR';
+
+        return [
+            '##FIRSTNAME##' => $order['billingAddress']['firstName'] ?? 'N/A',
+            '##LASTNAME##' => $order['billingAddress']['lastName'] ?? 'N/A',
+            '##ORDERID##' => $order['orderNumber'],
+            '##ORDERDATE##' => $orderDate,
+            '##ORDERAMOUNT##' => $amount,
+            '##INVOICENUM##' => $invoice['id'] ?? 'N/A',
+            '##DUEDATE##' => $dueDate,
+            '##DUEDAYS##' => $shop['due_days'],
+            '##SALESCHANNEL##' => $shop['sales_channel_domain'],
+            '##CUSTOMERCOMMENT##' => $order['customerComment'] ?? 'No comment provided',
+        ];
     }
 }
-?>

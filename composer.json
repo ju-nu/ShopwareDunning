@@ -1,6 +1,6 @@
 {
-    "name": "junu/dunning",
-    "description": "Dunning system for Shopware 6.6",
+    "name": "junu/dunning-system",
+    "description": "Shopware 6.6.10.4 dunning automation for multiple sales channels",
     "type": "project",
     "require": {
         "php": "^8.3",
@@ -11,7 +11,7 @@
     },
     "autoload": {
         "psr-4": {
-            "JunuDunning\\": "src/"
+            "Junu\\Dunning\\": "src/"
         }
     },
     "license": "MIT"
