@@ -1,10 +1,10 @@
 # Junu Dunning System for Shopware 6.6
 
-A PHP 8.4 script to automate dunning for Shopware 6.6 orders in the "reminded" transaction state, integrated with Brevo for HTML email notifications.
+A PHP 8.3 script to automate dunning for Shopware 6.6 orders in the "reminded" transaction state, integrated with Brevo for HTML email notifications.
 
 ## Prerequisites
 
-- PHP 8.4+
+- PHP 8.3.21+
 - Composer
 - Shopware 6.6.10.4 Admin API access (client ID and secret)
 - Brevo account with API key
@@ -71,7 +71,10 @@ HTML templates must include the following placeholders:
 - `##SALESCHANNEL##`: Sales channel name
 - `##CUSTOMERCOMMENT##`: Customer comment or "No comment provided"
 
-## Running with Supervisor
+## Running the Script
+
+### Normal Mode
+Run the script with Supervisor for continuous operation:
 
 1. Install Supervisor:
    ```bash
@@ -85,8 +88,8 @@ HTML templates must include the following placeholders:
    directory=/path/to/junu-dunning
    autostart=true
    autorestart=true
-   stderr_logfile=/path/to/junu-dunning/logs/supervisor_err.log
-   stdout_logfile=/path/to/junu-dunning/logs/supervisor_out.log
+   stderr_logfile=/path/to/junu-dunning/logs/supervisor_dry_err.log
+   stdout_logfile=/path/to/junu-dunning/logs/supervisor_logs_out.log
    ```
 
 3. Update and start Supervisor:
@@ -96,13 +99,34 @@ HTML templates must include the following placeholders:
    sudo supervisorctl start junu-dunning
    ```
 
+### Dry-Run Mode
+To simulate the dunning process without sending emails or updating orders, use the `--dry-run` flag. Invoices will be downloaded to `dry-run/{shop_domain}/{order_number}_{document_id}.pdf`.
+
+Run manually:
+```bash
+php dunning.php --dry-run
+```
+
+Or configure Supervisor for dry-run:
+```ini
+[program:junu-dunning-dry]
+command=php /path/to/junu-dunning/dunning.php --dry-run
+directory=/path/to/junu-dunning
+autostart=true
+autorestart=true
+stderr_logfile=/path/to/junu-dunning/logs/supervisor_dry_err.log
+stdout_logfile=/path/to/junu-dunning/logs/supervisor_dry_out.log
+```
+
+Check `logs/dunning.log` for `[DRY-RUN]` entries detailing simulated actions.
+
 ## Logs
 
-Logs are written to `logs/dunning.log` with detailed information on orders processed, emails sent, and errors.
+Logs are written to `logs/dunning.log` with detailed information on orders processed, emails sent (or simulated), and errors. In dry-run mode, look for `[DRY-RUN]` entries.
 
 ## Development
 
-- The code follows PSR-12 standards and uses PHP 8.4 features (strict typing, typed properties).
+- The code follows PSR-12 standards and uses PHP 8.3 features (strict typing, properties).
 - Source files are in `src/` with a modular structure (`Config`, `Service`, `Exception`).
 - Run `composer dump-autoload` after adding new classes.
 
