@@ -48,7 +48,7 @@ class ShopConfig
             'url',
             'api_key',
             'api_secret',
-            'sales_channel_id',
+            'sales_channel_name',
             'sales_channel_domain',
             'brevo_api_key',
             'no_invoice_email',
@@ -62,10 +62,6 @@ class ShopConfig
             if (!isset($shop[$key]) || empty($shop[$key])) {
                 throw new ConfigurationException("Missing or empty '$key' in shop configuration at index $index");
             }
-        }
-
-        if (!preg_match('/^[a-f0-9]{32}$/i', $shop['sales_channel_id'])) {
-            throw new ConfigurationException("Invalid sales_channel_id in shop configuration at index $index");
         }
 
         if (!filter_var($shop['no_invoice_email'], FILTER_VALIDATE_EMAIL)) {

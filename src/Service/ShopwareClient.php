@@ -40,6 +40,25 @@ class ShopwareClient
     }
 
     /**
+     * Fetches sales channel ID by name.
+     *
+     * @throws ApiException
+     */
+    public function getSalesChannelIdByName(string $salesChannelName): string
+    {
+        $response = $this->request('POST', '/api/search/sales-channel', [
+            'filter' => [['type' => 'equals', 'field' => 'name', 'value' => $salesChannelName]],
+            'includes' => ['sales_channel' => ['id']],
+        ]);
+
+        if (empty($response['data'])) {
+            throw new ApiException("Sales channel '$salesChannelName' not found");
+        }
+
+        return $response['data'][0]['id'];
+    }
+
+    /**
      * @throws ApiException
      */
     public function searchOrders(): array

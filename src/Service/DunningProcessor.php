@@ -49,27 +49,47 @@ class DunningProcessor
             $shop['url'],
             $shop['api_key'],
             $shop['api_secret'],
-            $shop['sales_channel_id'],
+            '', // salesChannelId will be resolved below
+            $this->log
+        );
+
+        try {
+            $salesChannelId = $client->getSalesChannelIdByName($shop['sales_channel_name']);
+        } catch (\Exception $e) {
+            $this->log->error('Failed to resolve sales channel ID', [
+                'sales_channel_name' => $shop['sales_channel_name'],
+                'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        // Reinitialize client with resolved salesChannelId
+        $client = new ShopwareClient(
+            $shop['url'],
+            $shop['api_key'],
+            $shop['api_secret'],
+            $salesChannelId,
             $this->log
         );
 
         $mailer = new BrevoMailer($shop['brevo_api_key'], $this->log, $this->dryRun);
 
         $orders = $client->searchOrders();
+        $this->log->debug('Orders fetched', ['sales_channel_id' => $salesChannelId, 'count' => count($orders['data'])]);
         foreach ($orders['data'] as $order) {
             if ($this->shouldShutdown) {
                 break;
             }
 
-            $this->processOrder($order, $client, $mailer, $shop);
+            $this->processOrder($order, $client, $mailer, $shop, $salesChannelId);
             usleep(50000); // 50ms delay between orders
         }
     }
 
-    private function processOrder(array $order, ShopwareClient $client, BrevoMailer $mailer, array $shop): void
+    private function processOrder(array $order, ShopwareClient $client, BrevoMailer $mailer, array $shop, string $salesChannelId): void
     {
         $context = [
-            'sales_channel_id' => $shop['sales_channel_id'],
+            'sales_channel_id' => $salesChannelId,
             'order_number' => $order['orderNumber'],
         ];
 
@@ -197,7 +217,7 @@ class DunningProcessor
         $invoiceContent = $client->downloadInvoice($invoice['id']);
         $invoicePath = null;
         if ($this->dryRun) {
-            $dir = __DIR__ . "/../../logs/dry-run/{$shop['sales_channel_id']}";
+            $dir = __DIR__ . "/../../logs/dry-run/{$context['sales_channel_id']}";
             if (!is_dir($dir)) {
                 mkdir($dir, 0777, true);
             }
