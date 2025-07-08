@@ -14,6 +14,7 @@ $dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
 $dotenv->load();
 
 $dryRun = in_array('--dry-run', $argv, true);
+file_put_contents(__DIR__ . '/logs/dunning.log', '');
 $log = new Logger('dunning');
 $log->pushHandler(new StreamHandler(__DIR__ . '/logs/dunning.log', Logger::DEBUG));
 
