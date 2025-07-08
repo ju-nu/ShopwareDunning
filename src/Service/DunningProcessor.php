@@ -88,8 +88,9 @@ class DunningProcessor
 
         try {
             $page = 1;
+            $limit = 50; // Must match the limit in ShopwareClient::searchOrders
             do {
-                $orders = $client->searchOrders($page); // Annahme: searchOrders akzeptiert eine Seitenzahl
+                $orders = $client->searchOrders($page);
                 if (empty($orders)) {
                     $this->log->debug('No more orders to process', [
                         'sales_channel_id' => $salesChannelId,
@@ -117,7 +118,7 @@ class DunningProcessor
                 }
 
                 $page++;
-            } while (count($orders) === 50); // Annahme: Limit ist 50
+            } while (count($orders) === $limit); // Continue if the page was full
         } catch (ApiException $e) {
             $this->log->error('Failed to fetch orders', [
                 'sales_channel_id' => $salesChannelId,
@@ -173,9 +174,8 @@ class DunningProcessor
         }
 
         // Bestimme Mahnstufe
-        $tags = array_column($order['tags'], 'name');
         $customFields = $order['customFields'] ?? [];
-        $stage = $this->determineDunningStage($tags, $customFields, $shop['due_days']);
+        $stage = $this->determineDunningStage($customFields, $shop['due_days']);
 
         if ($stage === null) {
             $this->log->info('No further dunning action required', $context);
@@ -213,33 +213,34 @@ class DunningProcessor
         }
     }
 
-    private function determineDunningStage(array $tags, array $customFields, int $dueDays): ?string
+    private function determineDunningStage(array $customFields, int $dueDays): ?string
     {
         $now = time();
         $dueSeconds = $dueDays * 86400;
 
-        if (!in_array('Mahnwesen: Zahlungserinnerung', $tags, true)) {
+        // Check if order is ignored
+        if (isset($customFields['junu_dunning_ignore']) && $customFields['junu_dunning_ignore'] === true) {
+            return null;
+        }
+
+        // No dunning email sent yet (Zahlungserinnerung)
+        if (empty($customFields['junu_dunning_1_sent_at'])) {
             return 'Zahlungserinnerung';
         }
 
+        // Zahlungserinnerung sent, check for Mahnung 1
         $zeSentAt = $customFields['junu_dunning_1_sent_at'] ?? 0;
-        if (
-            in_array('Mahnwesen: Zahlungserinnerung', $tags, true) &&
-            !in_array('Mahnwesen: Mahnung 1', $tags, true) &&
-            $zeSentAt && ($now - $zeSentAt) >= $dueSeconds
-        ) {
+        if ($zeSentAt && empty($customFields['junu_dunning_2_sent_at']) && ($now - $zeSentAt) >= $dueSeconds) {
             return 'Mahnung 1';
         }
 
+        // Mahnung 1 sent, check for Mahnung 2
         $ma1SentAt = $customFields['junu_dunning_2_sent_at'] ?? 0;
-        if (
-            in_array('Mahnwesen: Mahnung 1', $tags, true) &&
-            !in_array('Mahnwesen: Mahnung 2', $tags, true) &&
-            $ma1SentAt && ($now - $ma1SentAt) >= $dueSeconds
-        ) {
+        if ($ma1SentAt && empty($customFields['junu_dunning_3_sent_at']) && ($now - $ma1SentAt) >= $dueSeconds) {
             return 'Mahnung 2';
         }
 
+        // All dunning stages sent or no action required
         return null;
     }
 
@@ -256,11 +257,6 @@ class DunningProcessor
             'Zahlungserinnerung' => $shop['ze_template'],
             'Mahnung 1' => $shop['mahnung1_template'],
             'Mahnung 2' => $shop['mahnung2_template'],
-        ];
-        $tagMap = [
-            'Zahlungserinnerung' => 'Mahnwesen: Zahlungserinnerung',
-            'Mahnung 1' => 'Mahnwesen: Mahnung 1',
-            'Mahnung 2' => 'Mahnwesen: Mahnung 2',
         ];
         $fieldMap = [
             'Zahlungserinnerung' => 'junu_dunning_1_sent_at',
@@ -310,7 +306,6 @@ class DunningProcessor
             );
 
             if (!$this->dryRun) {
-                $client->addTag($order['id'], $tagMap[$stage]);
                 $client->updateCustomFields($order['id'], [
                     $fieldMap[$stage] => time(),
                 ]);
@@ -356,8 +351,6 @@ class DunningProcessor
             '##DUEDAYS##' => $shop['due_days'],
             '##SALESCHANNEL##' => $shop['sales_channel_domain'],
             '##CUSTOMERCOMMENT##' => $customerComment,
-
-
         ];
     }
 }

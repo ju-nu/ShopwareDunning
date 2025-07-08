@@ -65,11 +65,15 @@ class ShopwareClient
     /**
      * Searches orders with 'reminded' transaction state and an invoice document.
      *
+     * @param int $page The page number to fetch (1-based)
      * @throws ApiException
      */
-    public function searchOrders(): array
+    public function searchOrders(int $page = 1): array
     {
+        $limit = 50; // Increased limit for efficiency
         $body = [
+            'page' => $page,
+            'limit' => $limit,
             'filter' => [
                 ['type' => 'equals', 'field' => 'salesChannelId', 'value' => $this->salesChannelId],
                 ['type' => 'equals', 'field' => 'transactions.stateMachineState.technicalName', 'value' => 'reminded'],
@@ -84,7 +88,6 @@ class ShopwareClient
                 'documents' => [
                     'associations' => ['documentType' => []],
                 ],
-                'tags' => [],
                 'billingAddress' => [],
                 'orderCustomer' => [],
             ],
@@ -98,7 +101,6 @@ class ShopwareClient
                     'customFields',
                     'transactions',
                     'documents',
-                    'tags',
                     'billingAddress',
                     'customerComment',
                     'orderCustomer',
@@ -110,7 +112,6 @@ class ShopwareClient
                 'order_address' => ['firstName', 'lastName', 'email'],
                 'order_customer' => ['email'],
             ],
-            'limit' => 2,
         ];
 
         $this->log->debug('Search orders request body', ['body' => $body]);
@@ -121,11 +122,16 @@ class ShopwareClient
             $this->log->warning('Invalid or empty response from API', [
                 'response' => $response,
                 'uri' => '/api/search/order',
+                'page' => $page,
             ]);
             return [];
         }
 
-        $this->log->debug('Raw orders count', ['count' => count($response['data'])]);
+        $this->log->debug('Raw orders count', [
+            'count' => count($response['data']),
+            'page' => $page,
+            'total' => $response['meta']['total'] ?? 'unknown',
+        ]);
 
         foreach ($response['data'] as $order) {
             $orderId = $order['id'] ?? 'unknown';
@@ -133,6 +139,7 @@ class ShopwareClient
             $this->log->debug('Order found', [
                 'orderId' => $orderId,
                 'orderNumber' => $order['orderNumber'] ?? 'unknown',
+                'page' => $page,
             ]);
 
             foreach ($order['transactions'] as $transaction) {
@@ -141,6 +148,7 @@ class ShopwareClient
                     'transactionId' => $transaction['id'] ?? 'unknown',
                     'state' => $transaction['stateMachineState']['technicalName'] ?? 'null',
                     'stateId' => $transaction['stateMachineState']['id'] ?? 'null',
+                    'page' => $page,
                 ]);
             }
 
@@ -150,6 +158,7 @@ class ShopwareClient
                     'documentId' => $document['id'] ?? 'unknown',
                     'type' => $document['documentType']['technicalName'] ?? 'null',
                     'deepLinkCode' => $document['deepLinkCode'] ?? 'unknown',
+                    'page' => $page,
                 ]);
             }
         }
@@ -189,8 +198,17 @@ class ShopwareClient
             'customFields' => $customFields,
         ]);
 
+        // For PATCH requests, a 204 No Content response is valid and indicates success
+        if ($response === null) {
+            $this->log->debug('Custom fields updated successfully (204 No Content)', [
+                'orderId' => $orderId,
+                'customFields' => $customFields,
+            ]);
+            return;
+        }
+
         if (!isset($response['data'])) {
-            $this->log->warning('Failed to update custom fields', [
+            $this->log->warning('Unexpected response when updating custom fields', [
                 'orderId' => $orderId,
                 'customFields' => $customFields,
                 'response' => $response,
@@ -249,7 +267,7 @@ class ShopwareClient
      *
      * @throws ApiException
      */
-    private function request(string $method, string $uri, array $body = [], bool $raw = false): array|string
+    private function request(string $method, string $uri, array $body = [], bool $raw = false): array|string|null
     {
         $attempts = 0;
         $maxAttempts = 3;
@@ -272,11 +290,13 @@ class ShopwareClient
 
                 $start = microtime(true);
                 $response = $this->client->request($method, $uri, $options);
+                $statusCode = $response->getStatusCode();
                 $bodyContent = $response->getBody()->getContents();
 
                 $this->log->debug('API request successful', [
                     'method' => $method,
                     'uri' => $uri,
+                    'status_code' => $statusCode,
                     'time_ms' => (microtime(true) - $start) * 1000,
                     'response' => $raw ? 'raw' : $bodyContent,
                 ]);
@@ -285,11 +305,27 @@ class ShopwareClient
                     return $bodyContent; // Return the response body as a string
                 }
 
+                // For PATCH requests, a 204 No Content response is valid and has no body
+                if ($method === 'PATCH' && $statusCode === 204) {
+                    return null; // Indicate success with no content
+                }
+
+                // Only attempt JSON decoding if there’s a body
+                if ($bodyContent === '') {
+                    $this->log->warning('Empty response body received', [
+                        'method' => $method,
+                        'uri' => $uri,
+                        'status_code' => $statusCode,
+                    ]);
+                    return [];
+                }
+
                 $decoded = json_decode($bodyContent, true);
                 if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
                     $this->log->error('Failed to decode JSON response', [
                         'method' => $method,
                         'uri' => $uri,
+                        'status_code' => $statusCode,
                         'error' => json_last_error_msg(),
                         'response' => $bodyContent,
                     ]);
@@ -299,6 +335,7 @@ class ShopwareClient
                 return $decoded;
             } catch (RequestException $e) {
                 $attempts++;
+                $statusCode = $e->hasResponse() ? $e->getResponse()->getStatusCode() : 0;
                 $errorResponse = $e->hasResponse() ? (string) $e->getResponse()->getBody() : 'No response';
 
                 $this->log->error('API request attempt failed', [
@@ -306,6 +343,7 @@ class ShopwareClient
                     'uri' => $uri,
                     'attempt' => $attempts,
                     'error' => $e->getMessage(),
+                    'status_code' => $statusCode,
                     'response' => $errorResponse,
                 ]);
 
