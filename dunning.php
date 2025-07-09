@@ -28,12 +28,10 @@ try {
         exit(0);
     });
 
-    while (true) {
-        $log->info('Starting dunning cycle', ['dry_run' => $dryRun]);
-        $processor->process();
-        $log->info('Dunning cycle completed, sleeping for 1 hour');
-        sleep(3600);
-    }
+    $log->info('Starting dunning cycle', ['dry_run' => $dryRun]);
+    $processor->process();
+    $log->info('Dunning cycle completed');
+    exit(0);
 } catch (ConfigurationException $e) {
     $log->error('Configuration error: ' . $e->getMessage());
     exit(1);

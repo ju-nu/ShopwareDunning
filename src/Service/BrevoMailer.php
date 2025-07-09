@@ -19,13 +19,15 @@ class BrevoMailer
     private TransactionalEmailsApi $api;
     private Logger $log;
     private bool $dryRun;
+    private string $salesChannel;
 
-    public function __construct(string $apiKey, Logger $log, bool $dryRun)
+    public function __construct(string $apiKey, Logger $log, bool $dryRun, string $salesChannel)
     {
         $config = Configuration::getDefaultConfiguration()->setApiKey('api-key', $apiKey);
         $this->api = new TransactionalEmailsApi(new Client(['timeout' => 10.0]), $config);
         $this->log = $log;
         $this->dryRun = $dryRun;
+        $this->salesChannel = $salesChannel;
     }
 
     public function sendEmail(
@@ -46,10 +48,13 @@ class BrevoMailer
             return;
         }
 
+        $name = trim($this->salesChannel);
+        $senderName = $name !== '' ? $name . ' Kundenservice' : 'Kundenservice';
+
         try {
             $email = new SendSmtpEmail([
                 'to' => [['email' => $toEmail]],
-                'sender' => ['email' => $senderEmail, 'name' => 'Dunning System'],
+                'sender' => ['email' => $senderEmail, 'name' => $senderName],
                 'subject' => $subject,
                 'htmlContent' => $htmlContent,
             ]);

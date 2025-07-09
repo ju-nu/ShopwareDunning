@@ -84,7 +84,7 @@ class DunningProcessor
             $this->log
         );
 
-        $mailer = new BrevoMailer($shop['brevo_api_key'], $this->log, $this->dryRun);
+        $mailer = new BrevoMailer($shop['brevo_api_key'], $this->log, $this->dryRun, $shop['sales_channel_name']);
 
         try {
             $page = 1;
@@ -315,8 +315,13 @@ class DunningProcessor
         } catch (\Exception $e) {
             $this->log->error("Failed to process dunning stage: $stage", array_merge($context, ['error' => $e->getMessage()]));
         } finally {
-            if ($invoicePath && !$this->dryRun && file_exists($invoicePath)) {
-                unlink($invoicePath);
+            if ($invoicePath && file_exists($invoicePath)) {
+                try {
+                    unlink($invoicePath);
+                    $this->log->debug("Deleted temporary invoice file", array_merge($context, ['file' => $invoicePath]));
+                } catch (\Exception $e) {
+                    $this->log->error("Failed to delete temporary invoice file", array_merge($context, ['file' => $invoicePath, 'error' => $e->getMessage()]));
+                }
             }
         }
     }
