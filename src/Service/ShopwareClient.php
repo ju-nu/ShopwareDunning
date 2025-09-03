@@ -184,7 +184,7 @@ class ShopwareClient
                 ['type' => 'equals',    'field' => 'salesChannelId', 'value' => $this->salesChannelId],
                 // Tags are many-to-many; equalsAny on tagIds is the reliable filter.
                 // Passing a single UUID string is fine for equalsAny.
-                ['type' => 'equalsAny', 'field' => 'tagIds',         'value' => [$tagId]],
+                ['type' => 'equalsAny', 'field' => 'tagIds',         'value' => $tagId],
                 ['type' => 'equals',    'field' => 'documents.documentType.technicalName', 'value' => 'invoice'],
             ],
             'associations' => [
