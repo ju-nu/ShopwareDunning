@@ -181,19 +181,22 @@ class ShopwareClient
             'page' => $page,
             'limit' => $limit,
             'filter' => [
-                ['type' => 'equals',    'field' => 'salesChannelId', 'value' => $this->salesChannelId],
-                // Tags are many-to-many; equalsAny on tagIds is the reliable filter.
-                // Passing a single UUID string is fine for equalsAny.
-                ['type' => 'equalsAny', 'field' => 'tagIds',         'value' => $tagId],
-                ['type' => 'equals',    'field' => 'documents.documentType.technicalName', 'value' => 'invoice'],
+                ['type' => 'equals', 'field' => 'salesChannelId', 'value' => $this->salesChannelId],
+
+                // ✅ Use the association field on order -> tags
+                ['type' => 'equals', 'field' => 'tags.id', 'value' => $tagId],
+
+                // still require an invoice document
+                ['type' => 'equals', 'field' => 'documents.documentType.technicalName', 'value' => 'invoice'],
             ],
             'associations' => [
+                // include associations you filter on (and that you want in the result)
+                'tags' => [],
                 'documents' => [
                     'associations' => ['documentType' => []],
                 ],
                 'billingAddress' => [],
                 'orderCustomer'  => [],
-                'tags'           => [],
             ],
             'includes' => [
                 'order' => [
@@ -230,34 +233,9 @@ class ShopwareClient
             return [];
         }
 
-        $this->log->debug('Raw orders count (tag search)', [
-            'count' => count($response['data']),
-            'page' => $page,
-            'total' => $response['meta']['total'] ?? 'unknown',
-        ]);
-
-        foreach ($response['data'] as $order) {
-            $orderId = $order['id'] ?? 'unknown';
-
-            $this->log->debug('Order found (tag search)', [
-                'orderId' => $orderId,
-                'orderNumber' => $order['orderNumber'] ?? 'unknown',
-                'page' => $page,
-            ]);
-
-            foreach ($order['documents'] as $document) {
-                $this->log->debug('Document found', [
-                    'orderId' => $orderId,
-                    'documentId' => $document['id'] ?? 'unknown',
-                    'type' => $document['documentType']['technicalName'] ?? 'null',
-                    'deepLinkCode' => $document['deepLinkCode'] ?? 'unknown',
-                    'page' => $page,
-                ]);
-            }
-        }
-
         return array_values($response['data']);
     }
+
 
     /**
      * Adds a tag to an order.
