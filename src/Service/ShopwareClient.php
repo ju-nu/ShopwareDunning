@@ -8,7 +8,6 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Junu\Dunning\Exception\ApiException;
 use Monolog\Logger;
-use Psr\Http\Message\ResponseInterface;
 
 /**
  * Handles Shopware Admin API interactions with OAuth and retry logic.
@@ -63,7 +62,7 @@ class ShopwareClient
     }
 
     /**
-     * Searches orders with 'reminded' transaction state and an invoice document.
+     * Legacy search: orders with transaction state 'reminded' and an invoice document.
      *
      * @param int $page The page number to fetch (1-based)
      * @throws ApiException
@@ -151,6 +150,100 @@ class ShopwareClient
                     'page' => $page,
                 ]);
             }
+
+            foreach ($order['documents'] as $document) {
+                $this->log->debug('Document found', [
+                    'orderId' => $orderId,
+                    'documentId' => $document['id'] ?? 'unknown',
+                    'type' => $document['documentType']['technicalName'] ?? 'null',
+                    'deepLinkCode' => $document['deepLinkCode'] ?? 'unknown',
+                    'page' => $page,
+                ]);
+            }
+        }
+
+        return array_values($response['data']);
+    }
+
+    /**
+     * New search: orders carrying a specific tag and having an invoice document.
+     *
+     * @param string $tagName The tag to filter for (e.g. "Mahnlauf")
+     * @param int    $page    The page number to fetch (1-based)
+     * @throws ApiException
+     */
+    public function searchOrdersByTag(string $tagName, int $page = 1): array
+    {
+        $limit = 50;
+        $tagId = $this->getTagId($tagName); // find or create the tag; returns its UUID
+
+        $body = [
+            'page' => $page,
+            'limit' => $limit,
+            'filter' => [
+                ['type' => 'equals',    'field' => 'salesChannelId', 'value' => $this->salesChannelId],
+                // Tags are many-to-many; equalsAny on tagIds is the reliable filter.
+                // Passing a single UUID string is fine for equalsAny.
+                ['type' => 'equalsAny', 'field' => 'tagIds',         'value' => $tagId],
+                ['type' => 'equals',    'field' => 'documents.documentType.technicalName', 'value' => 'invoice'],
+            ],
+            'associations' => [
+                'documents' => [
+                    'associations' => ['documentType' => []],
+                ],
+                'billingAddress' => [],
+                'orderCustomer'  => [],
+                'tags'           => [],
+            ],
+            'includes' => [
+                'order' => [
+                    'id',
+                    'orderNumber',
+                    'amountTotal',
+                    'orderDateTime',
+                    'salesChannelId',
+                    'customFields',
+                    'documents',
+                    'billingAddress',
+                    'customerComment',
+                    'orderCustomer',
+                    'tags',
+                ],
+                'document'        => ['id', 'deepLinkCode', 'documentType', 'documentNumber'],
+                'document_type'   => ['id', 'technicalName'],
+                'order_address'   => ['firstName', 'lastName', 'email'],
+                'order_customer'  => ['email'],
+                'tag'             => ['id', 'name'],
+            ],
+        ];
+
+        $this->log->debug('Search orders by tag request body', ['body' => $body]);
+
+        $response = $this->request('POST', '/api/search/order', $body);
+
+        if (!isset($response['data']) || !is_array($response['data'])) {
+            $this->log->warning('Invalid or empty response from API (tag search)', [
+                'response' => $response,
+                'uri' => '/api/search/order',
+                'page' => $page,
+            ]);
+            return [];
+        }
+
+        $this->log->debug('Raw orders count (tag search)', [
+            'count' => count($response['data']),
+            'page' => $page,
+            'total' => $response['meta']['total'] ?? 'unknown',
+        ]);
+
+        foreach ($response['data'] as $order) {
+            $orderId = $order['id'] ?? 'unknown';
+
+            $this->log->debug('Order found (tag search)', [
+                'orderId' => $orderId,
+                'orderNumber' => $order['orderNumber'] ?? 'unknown',
+                'page' => $page,
+            ]);
 
             foreach ($order['documents'] as $document) {
                 $this->log->debug('Document found', [
@@ -266,6 +359,7 @@ class ShopwareClient
      * Makes an API request with retry logic.
      *
      * @throws ApiException
+     * @return array|string|null
      */
     private function request(string $method, string $uri, array $body = [], bool $raw = false): array|string|null
     {
@@ -347,6 +441,7 @@ class ShopwareClient
                     'response' => $errorResponse,
                 ]);
 
+                // If first attempt failed with 401, refresh the token and retry.
                 if ($e->getCode() === 401 && $attempts === 1) {
                     $this->accessToken = null;
                     continue;
@@ -354,6 +449,7 @@ class ShopwareClient
                 if ($attempts >= $maxAttempts) {
                     throw new ApiException("API request failed after $maxAttempts attempts: {$e->getMessage()}", 0, $e);
                 }
+                // Exponential backoff
                 usleep((2 ** $attempts) * 100000);
             }
         }

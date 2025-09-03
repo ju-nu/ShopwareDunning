@@ -86,11 +86,15 @@ class DunningProcessor
 
         $mailer = new BrevoMailer($shop['brevo_api_key'], $this->log, $this->dryRun, $shop['sales_channel_name']);
 
+        // Tag can be overridden per shop; defaults to "Mahnlauf"
+        $dunningTag = $shop['dunning_tag'] ?? 'Mahnlauf';
+
         try {
             $page = 1;
-            $limit = 50; // Must match the limit in ShopwareClient::searchOrders
+            $limit = 50; // Must match the limit in ShopwareClient::searchOrdersByTag
             do {
-                $orders = $client->searchOrders($page);
+                // Fetch orders carrying the dunning tag
+                $orders = $client->searchOrdersByTag($dunningTag, $page);
                 if (empty($orders)) {
                     $this->log->debug('No more orders to process', [
                         'sales_channel_id' => $salesChannelId,
@@ -135,31 +139,13 @@ class DunningProcessor
             'order_id' => $order['id'] ?? 'unknown',
         ];
 
-        // Prüfe, ob Transaktionen und Dokumente vorhanden sind
-        if (empty($order['transactions']) || empty($order['documents'])) {
-            $this->log->warning('Order skipped: No transactions or documents', $context);
+        // We no longer care about transaction state — rely on the "Mahnlauf" tag and require documents
+        if (empty($order['documents'])) {
+            $this->log->warning('Order skipped: No documents', $context);
             return;
         }
 
-        // Prüfe Transaktionsstatus
-        $transaction = $order['transactions'][0];
-        $transactionState = $transaction['stateMachineState']['technicalName'] ?? null;
-        if (!$transactionState) {
-            $this->log->warning('Transaction state missing', array_merge($context, [
-                'transactionId' => $transaction['id'] ?? 'unknown',
-                'stateId' => $transaction['stateMachineState']['id'] ?? 'null',
-            ]));
-            return;
-        }
-
-        if ($transactionState !== 'reminded') {
-            $this->log->info('Order skipped: Transaction not in reminded state', array_merge($context, [
-                'state' => $transactionState,
-            ]));
-            return;
-        }
-
-        // Prüfe Rechnung
+        // Find invoice
         $invoice = null;
         foreach ($order['documents'] as $doc) {
             if (($doc['documentType']['technicalName'] ?? null) === 'invoice') {
@@ -173,7 +159,7 @@ class DunningProcessor
             return;
         }
 
-        // Bestimme Mahnstufe
+        // Determine dunning stage (unchanged)
         $customFields = $order['customFields'] ?? [];
         $stage = $this->determineDunningStage($customFields, $shop['due_days']);
 
@@ -274,9 +260,10 @@ class DunningProcessor
         $replacements = $this->prepareEmailReplacements($order, $invoice, $shop);
         $html = str_replace(array_keys($replacements), array_values($replacements), $html);
 
+        $invoicePath = null;
+
         try {
             $invoiceContent = $client->downloadInvoice($invoice['id'], $invoice['deepLinkCode'] ?? '');
-            $invoicePath = null;
             if ($this->dryRun) {
                 $dir = __DIR__ . "/../../logs/dry-run/{$context['sales_channel_id']}";
                 if (!is_dir($dir)) {
@@ -337,7 +324,6 @@ class DunningProcessor
             'dd. MMMM yyyy'
         );
 
-        // Datum formatieren
         $orderDate = $formatter->format(new DateTime($order['orderDateTime']));
         $dueDate = $formatter->format((new DateTime())->modify("+{$shop['due_days']} days"));
         $amount = number_format($order['amountTotal'], 2, ',', '.') . ' EUR';
